@@ -19,28 +19,23 @@ def _bisect_left(a, x):
 
 def _bisect_right(a, x):
     """Private function to perform bisect right operation"""
-    lo = 0
-    hi = len(a)
-    while lo < hi:
-        mid = (lo+hi)//2
-        if x < a[mid] and not a[mid][:len(x)] == x:
-            hi = mid
-        else:
-            lo = mid + 1
-    return lo
+    return np.searchsorted(a, x, side='right')
 
 
-def _find_matching_indices(sorted_array, item, h):
+def _find_matching_indices(sorted_array, item, h, hash_size):
     """
     Finds indices in sorted array of strings where their first
     h elements match the items' first h elements
     """
     left_index = _bisect_left(sorted_array, item[:h])
-    right_index = _bisect_right(sorted_array, item[:h])
+    right_index = _bisect_right(sorted_array,
+                                item[:h]+"".join(['1' for i in
+                                                  range(hash_size -
+                                                        h)]))
     return np.arange(left_index, right_index)
 
 
-def _find_longest_prefix_match(bit_string_array, query):
+def _find_longest_prefix_match(bit_string_array, query, hash_size):
     """
     Private function to find the longest prefix match for query
     in the bit_string_array
@@ -48,12 +43,14 @@ def _find_longest_prefix_match(bit_string_array, query):
     hi = len(query)
     lo = 0
 
-    if _find_matching_indices(bit_string_array, query, hi).shape[0] > 0:
+    if _find_matching_indices(bit_string_array, query, hi,
+                              hash_size).shape[0] > 0:
         return hi
 
     while lo < hi:
-        mid = (lo + hi) // 2
-        k = _find_matching_indices(bit_string_array, query, mid).shape[0]
+        mid = (lo+hi)//2
+        k = _find_matching_indices(bit_string_array, query, mid,
+                                   hash_size).shape[0]
         if k > 0:
             lo = mid + 1
             res = mid
@@ -255,7 +252,8 @@ class LSHForest(BaseEstimator):
         for i in range(self.n_trees):
             bin_query = self._hash_generator.do_hash(
                 query, self.hash_functions_[i])
-            k = _find_longest_prefix_match(self._trees[i], bin_query)
+            k = _find_longest_prefix_match(self._trees[i], bin_query,
+                                           self.max_label_length)
             if k > max_depth:
                 max_depth = k
             bin_queries.append(bin_query)
@@ -270,7 +268,8 @@ class LSHForest(BaseEstimator):
                     self._original_indices[i, _find_matching_indices(
                         self._trees[i],
                         bin_queries[i],
-                        max_depth)].tolist())
+                        max_depth,
+                        self.max_label_length)].tolist())
             max_depth = max_depth - 1
         candidates = np.unique(candidates)
         ranks, distances = self._compute_distances(query, candidates)
