@@ -27,11 +27,14 @@ def _find_matching_indices(sorted_array, item, h, hash_size):
     Finds indices in sorted array of strings where their first
     h elements match the items' first h elements
     """
-    left_index = _bisect_left(sorted_array, item[:h])
+    left_index = _bisect_left(sorted_array, item)
     right_index = _bisect_right(sorted_array,
-                                item[:h]+"".join(['1' for i in
-                                                  range(hash_size -
-                                                        h)]))
+                                int(('{0:0' + str(hash_size) +
+                                     'b}').format(item)[:h] +
+                                    "".join(['1'
+                                             for i in
+                                             range(hash_size -
+                                                   h)]), 2))
     return np.arange(left_index, right_index)
 
 
@@ -40,7 +43,7 @@ def _find_longest_prefix_match(bit_string_array, query, hash_size):
     Private function to find the longest prefix match for query
     in the bit_string_array
     """
-    hi = len(query)
+    hi = hash_size
     lo = 0
 
     if _find_matching_indices(bit_string_array, query, hi,
@@ -138,7 +141,7 @@ class LSHForest(BaseEstimator):
       >>> lshf = LSHForest()
       >>> lshf.fit(X)
       LSHForest(c=50, hashing_algorithm='random_projections', lower_bound=4,
-           max_label_length=32, n_neighbors=1, n_trees=10, random_state=None)
+           max_label_length=32, n_neighbors=None, n_trees=10, seed=None)
 
       >>> lshf.kneighbors(X[:5], n_neighbors=3, return_distance=True)
       (array([[0, 1, 2],
