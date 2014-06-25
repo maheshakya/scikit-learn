@@ -78,4 +78,4 @@ class RandomProjections(BaseHash):
             raise ValueError("input_point or hash_function cannot be None.")
 
         projections = np.dot(hash_function, input_point)
-        return "".join(['1' if i > 0 else '0' for i in projections])
+        return int("".join(['1' if i > 0 else '0' for i in projections]),2)
