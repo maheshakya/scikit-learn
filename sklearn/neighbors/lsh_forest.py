@@ -5,6 +5,7 @@ Locality Sensitive Hashing Forest for Approximate Nearest Neighbor Search
 # Author: Maheshakya Wijewardena <maheshakya.10@cse.mrt.ac.lk>
 
 import numpy as np
+import itertools
 from ..base import BaseEstimator
 from ..utils.validation import safe_asarray
 from ..feature_extraction.lshashing import RandomProjections
@@ -12,33 +13,21 @@ from ..feature_extraction.lshashing import RandomProjections
 __all__ = ["LSHForest"]
 
 
-def _bisect_left(a, x):
-    """Private function to perform bisect left operation"""
-    return np.searchsorted(a, x)
-
-
-def _bisect_right(a, x):
-    """Private function to perform bisect right operation"""
-    return np.searchsorted(a, x, side='right')
-
-
-def _find_matching_indices(sorted_array, item, h, hash_size):
+def _find_matching_indices(sorted_array, item, left_mask, right_mask):
     """
     Finds indices in sorted array of strings where their first
     h elements match the items' first h elements
     """
-    left_index = _bisect_left(sorted_array, item)
-    right_index = _bisect_right(sorted_array,
-                                int(('{0:0' + str(hash_size) +
-                                     'b}').format(item)[:h] +
-                                    "".join(['1'
-                                             for i in
-                                             range(hash_size -
-                                                   h)]), 2))
+    left_index = np.searchsorted(sorted_array,
+                                 np.bitwise_and(item, left_mask))
+    right_index = np.searchsorted(sorted_array,
+                                  np.bitwise_or(item, right_mask),
+                                  side='right')
     return np.arange(left_index, right_index)
 
 
-def _find_longest_prefix_match(bit_string_array, query, hash_size):
+def _find_longest_prefix_match(bit_string_array, query, hash_size,
+                               left_masks, right_masks):
     """
     Private function to find the longest prefix match for query
     in the bit_string_array
@@ -46,14 +35,16 @@ def _find_longest_prefix_match(bit_string_array, query, hash_size):
     hi = hash_size
     lo = 0
 
-    if _find_matching_indices(bit_string_array, query, hi,
-                              hash_size).shape[0] > 0:
+    if _find_matching_indices(bit_string_array, query, left_masks[hi-1],
+                              right_masks[hi]).shape[0] > 0:
         return hi
 
     while lo < hi:
         mid = (lo+hi)//2
-        k = _find_matching_indices(bit_string_array, query, mid,
-                                   hash_size).shape[0]
+
+        k = _find_matching_indices(bit_string_array, query,
+                                   left_masks[mid],
+                                   right_masks[mid]).shape[0]
         if k > 0:
             lo = mid + 1
             res = mid
@@ -180,27 +171,45 @@ class LSHForest(BaseEstimator):
             raise ValueError("Unknown hashing algorithm: %s"
                              % (self.hashing_algorithm))
 
-    def _create_tree(self, hash_function=None):
+    def _create_tree(self):
         """
         Builds a single tree (in this case creates a sorted array of
         binary hashes).
         """
-        if hash_function is None:
-            raise ValueError("hash_funciton cannot be None.")
-
-        n_points = self._input_array.shape[0]
+        hashes, hash_function = self._hash_generator.do_hash(self._input_array)
         binary_hashes = []
-        for i in range(n_points):
-            binary_hashes.append(
-                self._hash_generator.do_hash(self._input_array[i],
-                                             hash_function))
+        for i in range(hashes.shape[0]):
+            xx = tuple(hashes[i])
+            binary_hashes.append(self.cache[xx[:self.cache_N]] * self.k
+                                 + self.cache[xx[self.cache_N:]])
 
-        return np.argsort(binary_hashes), np.sort(binary_hashes)
+        return np.argsort(binary_hashes), np.sort(binary_hashes), hash_function
 
     def _compute_distances(self, query, candidates):
         distances = _simple_euclidean_distance(
             query, self._input_array[candidates])
         return np.argsort(distances), np.sort(distances)
+
+    def _generate_masks(self):
+        """
+        Creates left and right masks for all hash lengths
+        """
+        self._left_mask, self._right_mask = [], []
+
+        for length in range(self.max_label_length+1):
+            left_mask = int("".join(['1' for i in range(length)])
+                            + "".join(['0' for i in
+                                       range(self.max_label_length-length)]),
+                            2)
+            self._left_mask.append(left_mask)
+            right_mask = int("".join(['0' for i in range(length)])
+                             + "".join(['1' for i in
+                                        range(self.max_label_length-length)]),
+                             2)
+            self._right_mask.append(right_mask)
+
+        self._left_mask = np.array(self._left_mask)
+        self._right_mask = np.array(self._right_mask)
 
     def fit(self, X=None):
         """
@@ -221,14 +230,22 @@ class LSHForest(BaseEstimator):
         self._hash_generator = self._select_hashing_algorithm(
             n_dim, self.max_label_length)
 
+        digits = ['0', '1']
         # Creates a g(p,x) for each tree
         self.hash_functions_ = []
         self._trees = []
         self._original_indices = []
+
+        self.cache_N = self.max_label_length/2
+        self.cache = {tuple(x): int("".join([digits[y] for y in x]), 2)
+                      for x in itertools.product((0, 1),
+                                                 repeat=self.cache_N)}
+
+        self.k = 2 ** self.cache_N
+
         for i in range(self.n_trees):
             # This is g(p,x) for a particular tree.
-            hash_function = self._hash_generator.generate_hash_function()
-            original_index, bin_hashes = self._create_tree(hash_function)
+            original_index, bin_hashes, hash_function = self._create_tree()
             self._original_indices.append(original_index)
             self._trees.append(bin_hashes)
             self.hash_functions_.append(hash_function)
@@ -236,6 +253,7 @@ class LSHForest(BaseEstimator):
         self.hash_functions_ = np.array(self.hash_functions_)
         self._trees = np.array(self._trees)
         self._original_indices = np.array(self._original_indices)
+        self._generate_masks()
 
         return self
 
@@ -253,10 +271,15 @@ class LSHForest(BaseEstimator):
         # descend phase
         max_depth = 0
         for i in range(self.n_trees):
-            bin_query = self._hash_generator.do_hash(
-                query, self.hash_functions_[i])
+            projections = np.array(np.dot(self.hash_functions_[i],
+                                          query) > 0, dtype=int)
+            xx = tuple(projections)
+            bin_query = self.cache[xx[:self.cache_N]] * self.k
+            + self.cache[xx[self.cache_N:]]
             k = _find_longest_prefix_match(self._trees[i], bin_query,
-                                           self.max_label_length)
+                                           self.max_label_length,
+                                           self._left_mask,
+                                           self._right_mask)
             if k > max_depth:
                 max_depth = k
             bin_queries.append(bin_query)
@@ -271,8 +294,8 @@ class LSHForest(BaseEstimator):
                     self._original_indices[i, _find_matching_indices(
                         self._trees[i],
                         bin_queries[i],
-                        max_depth,
-                        self.max_label_length)].tolist())
+                        self._left_mask[max_depth],
+                        self._right_mask[max_depth])].tolist())
             max_depth = max_depth - 1
         candidates = np.unique(candidates)
         ranks, distances = self._compute_distances(query, candidates)
@@ -335,8 +358,11 @@ class LSHForest(BaseEstimator):
 
         input_array_shape = self._input_array.shape[0]
         for i in range(self.n_trees):
-            bin_query = self._hash_generator.do_hash(
-                item, self.hash_functions_[i])
+            projections = np.array(np.dot(self.hash_functions_[i],
+                                          item) > 0, dtype=int)
+            xx = tuple(projections)
+            bin_query = self.cache[xx[:self.cache_N]] * self.k
+            + self.cache[xx[self.cache_N:]]
             # gets the position to be added in the tree.
             position = self._trees[i].searchsorted(bin_query)
             # adds the hashed value into the tree.
