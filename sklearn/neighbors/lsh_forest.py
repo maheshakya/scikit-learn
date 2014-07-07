@@ -19,9 +19,9 @@ def _find_matching_indices(sorted_array, item, left_mask, right_mask):
     h elements match the items' first h elements
     """
     left_index = np.searchsorted(sorted_array,
-                                 np.bitwise_and(item, left_mask))
+                                 item & left_mask)
     right_index = np.searchsorted(sorted_array,
-                                  np.bitwise_or(item, right_mask),
+                                  item | right_mask,
                                   side='right')
     return np.arange(left_index, right_index)
 
