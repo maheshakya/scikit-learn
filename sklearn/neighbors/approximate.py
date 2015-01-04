@@ -210,21 +210,17 @@ class LSHForest(BaseEstimator, KNeighborsMixin, RadiusNeighborsMixin):
         self.min_hash_match = min_hash_match
         self.radius_cutoff_ratio = radius_cutoff_ratio
 
-    def _compute_distances(self, query, candidates):
+    def _compute_distances(self, queries, candidates):
         """Computes the cosine distance.
 
         Distance is from the query to points in the candidates array.
-        Returns argsort of distances in the candidates
-        array and sorted distances.
         """
         if candidates.shape == (0,):
             # needed since _fit_X[np.array([])] doesn't work if _fit_X sparse
             return np.empty(0, dtype=np.int), np.empty(0, dtype=float)
-
-        distances = pairwise_distances(query, self._fit_X[candidates],
-                                       metric='cosine')[0]
-        distance_positions = np.argsort(distances)
-        return distance_positions, distances[distance_positions]
+        distances = pairwise_distances(queries, self._fit_X[candidates],
+                                       metric='cosine')
+        return distances
 
     def _generate_masks(self):
         """Creates left and right masks for all hash lengths."""
@@ -239,8 +235,7 @@ class LSHForest(BaseEstimator, KNeighborsMixin, RadiusNeighborsMixin):
     def _get_candidates(self, query, max_depth, bin_queries, n_neighbors):
         """Performs the Synchronous ascending phase.
 
-        Returns an array of candidates, their distance ranks and
-        distances.
+        Returns an array of candidates for a query
         """
         index_size = self._fit_X.shape[0]
         # Number of candidates considered including duplicates
@@ -278,12 +273,7 @@ class LSHForest(BaseEstimator, KNeighborsMixin, RadiusNeighborsMixin):
             remaining = np.setdiff1d(np.arange(0, index_size), candidates)
             to_fill = n_neighbors - candidates.shape[0]
             candidates = np.concatenate((candidates, remaining[:to_fill]))
-
-        ranks, distances = self._compute_distances(query,
-                                                   candidates.astype(int))
-
-        return (candidates[ranks[:n_neighbors]],
-                distances[:n_neighbors])
+        return candidates
 
     def _get_radius_neighbors(self, query, max_depth, bin_queries, radius):
         """Finds radius neighbors from the candidates obtained.
@@ -422,13 +412,29 @@ class LSHForest(BaseEstimator, KNeighborsMixin, RadiusNeighborsMixin):
         X = check_array(X, accept_sparse='csr')
 
         neighbors, distances = [], []
+        candidates_list = []
         bin_queries, max_depth = self._query(X)
         for i in range(X.shape[0]):
-            neighs, dists = self._get_candidates(X[i], max_depth[i],
-                                                 bin_queries[i],
-                                                 n_neighbors)
-            neighbors.append(neighs)
-            distances.append(dists)
+            candidates = self._get_candidates(X[i], max_depth[i],
+                                              bin_queries[i],
+                                              n_neighbors)
+            candidates_list.append(candidates)
+        all_candidates = np.unique(np.concatenate([x for
+                                                   x in candidates_list]))
+                                   
+        dists = self._compute_distances(X, all_candidates.astype(int))
+        
+        neighbors = np.empty((X.shape[0], n_neighbors), dtype=int)
+        distances = np.empty((X.shape[0], n_neighbors), dtype=float)
+        
+        for i in range(X.shape[0]):
+            cand_indices = np.array([j for j, 
+                                          val in enumerate(all_candidates)
+                                          if val in candidates_list[i]])
+            dists_i = dists[i, cand_indices]
+            ranks = np.argsort(dists_i)
+            neighbors[i] = all_candidates[cand_indices][ranks[:n_neighbors]]
+            distances[i] = dists_i[ranks][:n_neighbors]
 
         if return_distance:
             return np.array(distances), np.array(neighbors)
